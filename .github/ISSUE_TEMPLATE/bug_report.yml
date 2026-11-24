@@ -1,0 +1,48 @@
+name: Bug report
+description: Something renders wrong, crashes, or does not match the docs
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead? Screenshots help a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open https://coopersimpson101-debug.github.io/splatweb/
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: e.g. Chrome 131 on Windows 11
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+      placeholder: e.g. NVIDIA RTX 2060, driver 566.36
+    validations:
+      required: true
+  - type: textarea
+    id: adapter
+    attributes:
+      label: WebGPU adapter info
+      description: |
+        Paste the output of this in the browser console on the demo page:
+        `const a = await navigator.gpu?.requestAdapter(); JSON.stringify({info: a?.info, features: [...(a?.features ?? [])], limits: {maxStorageBufferBindingSize: a?.limits.maxStorageBufferBindingSize, maxComputeWorkgroupsPerDimension: a?.limits.maxComputeWorkgroupsPerDimension}}, null, 2)`
+      render: json
+  - type: textarea
+    id: console
+    attributes:
+      label: Console errors
+      description: Any errors or WebGPU validation messages from the developer console.
+      render: text

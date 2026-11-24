@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "splatweb: a from-scratch 3D Gaussian Splatting renderer for WebGPU"
+type: software
+authors:
+  - name: "the splatweb authors"
+abstract: "A hand-written 3D Gaussian Splatting renderer for WebGPU in TypeScript and WGSL: streaming .ply/.splat loaders, compute preprocessing with EWA projection and spherical harmonics, a GPU radix sort, and premultiplied-alpha splat rasterization."
+repository-code: "https://github.com/coopersimpson101-debug/splatweb"
+url: "https://coopersimpson101-debug.github.io/splatweb/"
+license: MIT
+version: 0.1.0
+keywords:
+  - gaussian splatting
+  - webgpu
+  - wgsl
+  - rendering
+  - radix sort

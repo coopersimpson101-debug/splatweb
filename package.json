@@ -14,11 +14,14 @@
     "test:watch": "vitest",
     "test:gpu": "vitest run tests/gpu.test.ts",
     "render": "vite-node scripts/headless.ts -- --out docs/images/demo.png",
-    "bench": "vite-node scripts/headless.ts -- --bench"
+    "bench": "vite-node scripts/headless.ts -- --bench",
+    "capture:gif": "vite-node scripts/capture_gif.ts -- --out docs/images/orbit.gif",
+    "banner": "vite-node scripts/make_banner.ts"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
     "@webgpu/types": "^0.1.74",
+    "gifenc": "^1.0.3",
     "typescript": "^5.9.3",
     "vite": "^7.3.8",
     "vite-node": "^3.2.4",

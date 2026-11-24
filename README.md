@@ -1,24 +1,59 @@
-# splatweb
+<div align="center">
+
+<img src="docs/assets/banner.svg" alt="splatweb: 3D Gaussian Splatting for WebGPU, from scratch" width="100%">
+
+[![CI](https://github.com/coopersimpson101-debug/splatweb/actions/workflows/ci.yml/badge.svg)](https://github.com/coopersimpson101-debug/splatweb/actions/workflows/ci.yml)
+[![Pages](https://github.com/coopersimpson101-debug/splatweb/actions/workflows/pages.yml/badge.svg)](https://github.com/coopersimpson101-debug/splatweb/actions/workflows/pages.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-F472B6.svg)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-%2B%20WGSL-3178C6?logo=typescript&logoColor=white)](src)
+[![WebGPU](https://img.shields.io/badge/WebGPU-compute%20%2B%20render-F472B6)](https://www.w3.org/TR/webgpu/)
+
+[![▶ Live demo](https://img.shields.io/badge/%E2%96%B6%20Live%20demo-open%20in%20your%20browser-F472B6?style=for-the-badge)](https://coopersimpson101-debug.github.io/splatweb/)
+
+</div>
 
 **A 3D Gaussian Splatting renderer for WebGPU, written from scratch in TypeScript and WGSL.**
-Scan a room with a phone, then fly through it in real time in the browser, or embed the
-renderer core in your own engine.
+Scan a room with a phone and fly through it in real time in the browser, or embed the renderer
+core in your own engine. No three.js, no Babylon: loaders, EWA projection, spherical harmonics,
+the GPU radix sort and blending are hand-written and tested against CPU references on a real GPU.
 
-No three.js, no Babylon, no rendering libraries. The loaders, the EWA projection, the
-spherical harmonics, the multi-pass GPU radix sort and the blending are all implemented here
-by hand, and they are tested against CPU reference implementations, including on a real GPU.
+[Live demo](https://coopersimpson101-debug.github.io/splatweb/) ·
+[How it works](#how-it-works) ·
+[Results](#results) ·
+[Capture pipeline](docs/capture-pipeline.md) ·
+[Embedding](docs/vanta-integration.md) ·
+[Status](#status)
 
-![splatweb rendering the procedural demo scene](docs/images/demo.png)
+<div align="center">
 
-*The image above is a real frame from this renderer: the built-in procedural scene (150k
-splats), rendered headless through Dawn on an RTX 2060 with `npm run render`. The browser demo
-renders the same scene.*
+<img src="docs/images/orbit.gif" alt="Orbit around the procedural demo scene rendered by splatweb" width="640">
 
-<!-- TODO(author): replace with a GIF of your own lab scan: docs/images/lab.gif -->
-> **Demo GIF:** _slot for the author: a capture of a real lab scan (see "TODO for the author")._
+<sub>Real output of this renderer: a 60-frame orbit of the built-in procedural scene (150k splats, SH degree 3),
+rendered headless through Dawn on an RTX 2060 by <a href="scripts/capture_gif.ts"><code>scripts/capture_gif.ts</code></a>
+(<code>npm run capture:gif</code>). The live demo renders the same scene. Full-resolution still:
+<a href="docs/images/demo.png"><code>docs/images/demo.png</code></a> (<code>npm run render</code>).</sub>
 
-**Live demo:** [https://coopersimpson101-debug.github.io/splatweb/](https://coopersimpson101-debug.github.io/splatweb/). It loads the procedural scene with
-nothing to download; drag in any `.ply` or `.splat`, or append `?url=…`.
+</div>
+
+## Highlights
+
+- **From-scratch WebGPU pipeline**: compute preprocess → 4-pass GPU LSD radix sort → instanced, eigen-aligned quads via `drawIndirect`.
+- **EWA splatting done properly**: `Σ' = J W Σ Wᵀ Jᵀ + 0.3 I`, checked against finite differences and a 200k-sample Monte-Carlo estimate (within 2%).
+- **Hand-written GPU radix sort**: histogram → multi-level Blelloch scan → stable scatter; bit-exact vs a CPU reference up to 600k keys.
+- **Streaming loaders** for 3DGS `.ply` (SH up to degree 3, any property order or endianness) and `.splat`; splats draw while the file downloads.
+- **Tested on real hardware**: 5 of the 60 tests run the actual WGSL through Dawn on an RTX 2060; blending matches CPU compositing to < 2/255.
+- **Measured, not guessed**: 150k splats at 1080p in 2.62 ms of GPU time (headless, timestamp queries; table below).
+- **Embeddable**: `SplatRenderer` renders into a host's `GPUDevice`, encoder and target, with an optional depth test.
+
+## Quickstart
+
+```bash
+git clone https://github.com/coopersimpson101-debug/splatweb && cd splatweb
+npm install
+npm run dev          # http://localhost:5173 , drop any .ply / .splat on the page
+npm test             # 60 tests; the GPU suite runs if Dawn finds an adapter
+npm run capture:gif  # re-record the GIF above on your own GPU
+```
 
 ---
 
@@ -37,6 +72,26 @@ nothing to download; drag in any `.ply` or `.splat`, or append `?url=…`.
 | **Embedding** | `SplatRenderer` takes a host-provided `GPUDevice`, command encoder, target view and camera matrices. See [docs/vanta-integration.md](docs/vanta-integration.md) and [examples/minimal-host.ts](examples/minimal-host.ts). |
 
 ## Architecture
+
+```mermaid
+flowchart LR
+  F[".ply / .splat<br/>fetch or File stream"] --> P["PlyStreamParser /<br/>SplatStreamParser"]
+  P --> D["SplatData<br/>CPU, f32"]
+  D -->|"packSplats / packSH<br/>f16, 32 B per splat"| B[("GPU buffers")]
+  subgraph frame["per view, per frame (GPU)"]
+    direction LR
+    PRE["preprocess.wgsl<br/>cull, Σ = RSSᵀRᵀ, EWA Σ′<br/>eigen quad, SH colour<br/>depth key, atomic count"]
+    PRE --> H["radix_histogram.wgsl"] --> SC["radix_scan.wgsl<br/>multi-level Blelloch"] --> SCT["radix_scatter.wgsl<br/>stable"]
+    SCT -->|"4 passes x 8 bits"| H
+    SCT --> R["render.wgsl<br/>drawIndirect quads<br/>α = o·exp(-4.5‖uv‖²)"]
+    PRE -.->|"CPU fallback sort"| R
+  end
+  B --> PRE
+  R --> T["host colour target<br/>over / under blend"]
+```
+
+<details>
+<summary>Detailed ASCII diagram (buffers and passes)</summary>
 
 ```
             ┌──────────────── host (demo app, Vanta, any engine) ───────────────┐
@@ -65,6 +120,8 @@ nothing to download; drag in any `.ply` or `.splat`, or append `?url=…`.
    └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+</details>
+
 Source layout:
 
 ```
@@ -81,6 +138,11 @@ tests/               vitest: CPU math references + real-WGSL tests on Dawn
 ```
 
 ## How it works
+
+The maths one stage at a time: covariance, EWA projection, conic and oriented quad, spherical harmonics, the radix sort and the two blend modes.
+
+<details>
+<summary><b>Read the derivations</b> (6 sections)</summary>
 
 ### 1. A scene is a set of anisotropic 3D Gaussians
 
@@ -173,6 +235,8 @@ Both orderings give the same image. The GPU test renders overlapping splats both
 the CPU sort, and compares every pixel with a CPU compositing reference. The maximum error is
 below 2/255 in all three cases.
 
+</details>
+
 ## Build, run, test
 
 ```bash
@@ -197,10 +261,16 @@ WebGPU). Remote `?url=` files must be served with CORS headers.
 
 ### Deploying the live demo (GitHub Pages)
 
-1. Push to `main` on GitHub.
-2. In **Settings → Pages**, set **Source: GitHub Actions**.
-3. `.github/workflows/pages.yml` runs the tests, builds, and publishes `dist/`. The build uses
-   `base: './'`, so it works at `https://<user>.github.io/<repo>/`.
+`.github/workflows/pages.yml` runs the tests, builds and publishes `dist/` on every push to `main`
+(Settings → Pages → Source: GitHub Actions). The build uses `base: './'`, so it works under `/<repo>/`.
+
+### Regenerating the README visuals
+
+```bash
+npm run render       # docs/images/demo.png   one headless frame (Dawn, needs a GPU)
+npm run capture:gif  # docs/images/orbit.gif  60-frame orbit (Dawn, needs a GPU)
+npm run banner       # docs/assets/banner.svg procedural scene projected with the CPU EWA reference
+```
 
 ## Results
 
@@ -236,7 +306,14 @@ numbers as indicative.
 In this scene rasterization (overdraw of large, translucent splats) dominates the frame, not
 the sort.
 
-### In-browser performance (to be filled in by the author)
+### In the browser
+
+![splatweb viewer UI in a WebGPU browser](docs/images/browser-ui.jpg)
+
+*Screenshot of the built viewer (`npm run build && npm run preview`) in a Chromium-based WebGPU browser
+pane on the development machine. That pane is throttled, so the FPS in the overlay is not representative.*
+
+### In-browser performance (⏳ to be filled in by the author)
 
 Scene: _______ (splat count ______, SH degree __), resolution ______, GPU sort, back-to-front.
 
@@ -248,41 +325,27 @@ Scene: _______ (splat count ______, SH degree __), resolution ______, GPU sort, 
 | _Android phone_ | | | | | |
 | _VR headset (WebXR)_ | | | | | |
 
-## TODO for the author
+## Status
 
-These items need your hardware, your data or your accounts. None of them has been faked.
+✅ done and tested here · 🧪 built, partly verified · ⏳ needs the author's scan, device or account
 
-1. **Scan the lab and train it.** Follow [docs/capture-pipeline.md](docs/capture-pipeline.md):
-   ```bash
-   scripts/train_from_video.sh lab.mp4 colmap_work/lab 2 30000   # needs CUDA, COLMAP, nerfstudio
-   ```
-   Result: `colmap_work/lab/export/splat.ply`. Splat count: ______ · training time: ______
-2. **Record the demo GIF** of that scan in the browser. Save it as `docs/images/lab.gif` and
-   replace the GIF slot at the top of this README.
-3. **Fill the in-browser performance table** on each device: open the page, load the scene,
-   wait a few seconds and read the overlay (FPS and per-stage GPU ms come from timestamp
-   queries where the browser supports them). Then run `npm run bench` on desktop GPUs for the
-   headless table.
-4. **Validate WebXR on a headset** (Chrome with WebXR + WebGPU binding). The "Enter VR" button
-   only appears when `XRGPUBinding` exists. Result: works / doesn't work on ______.
-5. **Enable GitHub Pages** (Settings → Pages → GitHub Actions) and put the URL at the top.
-6. **Vanta integration.** Write the adapter described in
-   [docs/vanta-integration.md](docs/vanta-integration.md) (device, camera matrices, target
-   texture, optional depth) and confirm it renders inside Vanta.
-7. Optional: run the GPU tests in CI on a self-hosted GPU runner with `SPLATWEB_GPU=1`.
+| Item | State | Notes |
+|---|:---:|---|
+| Loaders/writers, streaming, f16 packing, all CPU maths | ✅ | vitest, CPU references |
+| Preprocess, GPU radix sort, raster, both blend modes | ✅ | real WGSL through Dawn on an RTX 2060 (5 GPU tests) |
+| Headless benchmark table, demo still and orbit GIF | ✅ | `npm run bench`, `npm run render`, `npm run capture:gif` |
+| `npm run build`, CI, GitHub Pages deploy | ✅ | hosted CI has no GPU, so the GPU suite reports as skipped there |
+| Interactive viewer UI (controls, overlay, drag and drop, `?url=`) | 🧪 | opened in a Chromium WebGPU browser pane (2026-11-24): renders, orbit and zoom work, overlay shows timestamp-query timings; drag and drop, `?url=` and fly mode not yet exercised |
+| WebXR `immersive-vr` | 🧪 | feature-detected (`XRGPUBinding`); not yet tried on a headset |
+| Scan the lab and train it ([capture pipeline](docs/capture-pipeline.md)): `scripts/train_from_video.sh lab.mp4 colmap_work/lab 2 30000` | ⏳ | needs CUDA, COLMAP, nerfstudio. Splat count ____ · training time ____ |
+| GIF of the lab scan in the browser, saved as `docs/images/lab.gif` | ⏳ | the GIF above is the procedural scene, not a scan |
+| In-browser performance table (below) | ⏳ | open the page on each device and read the overlay |
+| WebXR on a headset | ⏳ | works / doesn't work on ____ |
+| Vanta adapter ([docs/vanta-integration.md](docs/vanta-integration.md)) | ⏳ | device, camera matrices, target texture, optional depth |
+| GPU tests in CI on a self-hosted GPU runner (`SPLATWEB_GPU=1`) | ⏳ | optional |
 
-## Honest status
-
-* **Works and is tested:** loaders and writers, streaming, f16 packing, all math, preprocess,
-  GPU sort, raster and both blend modes. These are tested in Node on a real GPU through Dawn.
-  `npm run build` succeeds.
-* **Not yet observed in a browser by the authors:** the interactive viewer UI (controls,
-  overlay, drag and drop, `?url=`). It builds and type-checks, and it uses the same
-  `SplatRenderer` the GPU tests exercise, but nobody has driven it by hand in a browser yet.
-* **Experimental and untested:** WebXR immersive-vr.
-* **Not implemented:** training (we use COLMAP + nerfstudio/gsplat, see above), compressed
-  PLY variants (PlayCanvas/SuperSplat compressed, `.spz`, `.ksplat`), ASCII PLY, and per-tile
-  rasterization.
+**Not implemented:** training (use COLMAP + nerfstudio/gsplat, see above), compressed PLY variants
+(PlayCanvas/SuperSplat compressed, `.spz`, `.ksplat`), ASCII PLY, and per-tile rasterization.
 
 ## Roadmap
 
@@ -305,4 +368,4 @@ These items need your hardware, your data or your accounts. None of them has bee
 * The `.splat` layout follows the antimatter15/splat web viewer.
 * Training tools referenced (not included): COLMAP, nerfstudio `splatfacto`, gsplat.
 
-MIT licensed. See [LICENSE](LICENSE).
+MIT licensed, see [LICENSE](LICENSE). Contributions are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md). To cite this software, see [CITATION.cff](CITATION.cff).
