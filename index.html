@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="description" content="splatweb: a hand-written Gaussian splatting renderer for WebGPU." />
+    <title>splatweb</title>
+    <link rel="stylesheet" href="./src/app/style.css" />
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+
+    <div id="panel" class="panel">
+      <div class="panel-head">
+        <strong>splatweb</strong>
+        <button id="toggle-panel" class="icon" aria-label="Collapse panel">&minus;</button>
+      </div>
+      <div id="panel-body">
+        <label class="file">
+          <input id="file" type="file" accept=".ply,.splat" />
+          <span>Open .ply / .splat</span>
+        </label>
+        <form id="url-form" class="row">
+          <input id="url" type="url" placeholder="https://…/scene.ply" aria-label="Scene URL" />
+          <button type="submit">Load</button>
+        </form>
+        <button id="demo">Procedural demo scene</button>
+
+        <div class="grid">
+          <label for="sort">Sort</label>
+          <select id="sort">
+            <option value="gpu">GPU radix</option>
+            <option value="cpu">CPU fallback</option>
+          </select>
+          <label for="blend">Blend</label>
+          <select id="blend">
+            <option value="back-to-front">back-to-front</option>
+            <option value="front-to-back">front-to-back</option>
+          </select>
+          <label for="sh">SH degree</label>
+          <select id="sh">
+            <option value="3">3</option>
+            <option value="2">2</option>
+            <option value="1">1</option>
+            <option value="0">0</option>
+          </select>
+          <label for="scale">Splat scale</label>
+          <input id="scale" type="range" min="0.1" max="2" step="0.05" value="1" />
+          <label for="flip">Flip Y (COLMAP)</label>
+          <input id="flip" type="checkbox" />
+          <label for="mode">Camera</label>
+          <select id="mode">
+            <option value="orbit">orbit</option>
+            <option value="fly">fly (WASD)</option>
+          </select>
+        </div>
+        <div class="row">
+          <button id="selftest">Self-test GPU sort</button>
+          <button id="vr" hidden>Enter VR</button>
+        </div>
+        <p class="hint">Drag to orbit, right/shift-drag to pan, wheel/pinch to zoom, F toggles fly mode. Drop a file anywhere.</p>
+      </div>
+    </div>
+
+    <pre id="stats" class="stats"></pre>
+    <div id="progress" class="progress" hidden><div></div></div>
+    <div id="toast" class="toast" hidden></div>
+    <div id="drop" class="drop" hidden>Drop .ply or .splat</div>
+    <div id="fatal" class="fatal" hidden></div>
+
+    <script type="module" src="./src/app/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,30 @@
+{
+  "name": "splatweb",
+  "version": "0.1.0",
+  "description": "A hand-written Gaussian splatting renderer for WebGPU: streaming .ply/.splat loader, compute preprocessing with EWA projection, GPU radix sort, and premultiplied alpha splat rasterization.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:gpu": "vitest run tests/gpu.test.ts",
+    "render": "vite-node scripts/headless.ts -- --out docs/images/demo.png",
+    "bench": "vite-node scripts/headless.ts -- --bench"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@webgpu/types": "^0.1.74",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.8",
+    "vite-node": "^3.2.4",
+    "vitest": "^3.2.7"
+  },
+  "optionalDependencies": {
+    "webgpu": "^0.6.2"
+  }
+}

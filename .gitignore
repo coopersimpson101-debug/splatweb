@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.venv/
+venv/
+*.log
+coverage/
+.vite/
+.DS_Store
+Thumbs.db
+# large scene files and training outputs (use scripts/ to fetch or produce them)
+scenes/
+public/scenes/
+*.ply
+*.splat
+!tests/fixtures/*.ply
+outputs/
+colmap_work/
