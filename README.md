@@ -3,6 +3,7 @@
 <img src="docs/assets/banner.svg" alt="splatweb: 3D Gaussian Splatting for WebGPU, from scratch" width="100%">
 
 [![CI](https://github.com/coopersimpson101-debug/splatweb/actions/workflows/ci.yml/badge.svg)](https://github.com/coopersimpson101-debug/splatweb/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/coopersimpson101-debug/splatweb?color=F472B6&label=release)](https://github.com/coopersimpson101-debug/splatweb/releases/latest)
 [![Pages](https://github.com/coopersimpson101-debug/splatweb/actions/workflows/pages.yml/badge.svg)](https://github.com/coopersimpson101-debug/splatweb/actions/workflows/pages.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-F472B6.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-%2B%20WGSL-3178C6?logo=typescript&logoColor=white)](src)
