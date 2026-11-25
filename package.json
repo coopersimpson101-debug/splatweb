@@ -19,13 +19,13 @@
     "banner": "vite-node scripts/make_banner.ts"
   },
   "devDependencies": {
-    "@types/node": "^24.19.2",
+    "@types/node": "^26.6.6",
     "@webgpu/types": "^0.1.74",
     "gifenc": "^1.0.3",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.8",
-    "vite-node": "^3.2.4",
-    "vitest": "^3.2.7"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vite-node": "^6.0.0",
+    "vitest": "^5.1.1"
   },
   "optionalDependencies": {
     "webgpu": "^0.6.2"
