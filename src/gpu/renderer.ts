@@ -61,6 +61,10 @@ export interface RendererStats {
   gpuSortMs?: number;
   gpuRenderMs?: number;
   cpuSortMs?: number;
+  /** Live streaming: number of in-place GPU buffer growths so far. */
+  grows?: number;
+  /** Live streaming: total splats uploaded through uploadRange(). */
+  uploadedSplats?: number;
 }
 
 const U = () => GPUBufferUsage;
@@ -74,6 +78,7 @@ interface SlotResources {
   renderCpuBG?: GPUBindGroup;
   lastCpuView?: Float32Array;
   lastCpuCount?: number;
+  lastCpuVersion?: number;
 }
 
 export class SplatRenderer {
@@ -108,6 +113,8 @@ export class SplatRenderer {
   private readonly drawArgs: GPUBuffer;
   private slots: SlotResources[] = [];
   private uploaded = 0;
+  /** Bumped whenever splat contents change (live updates) so the CPU sort cache invalidates. */
+  private contentVersion = 0;
 
   // Timestamps / stats readback.
   private readonly querySet: GPUQuerySet | null = null;
@@ -196,8 +203,8 @@ export class SplatRenderer {
     this.capacity = cap;
     this.shDegree = data.shDegree;
     this.positions = data.positions;
-    this.splatBuf = d.createBuffer({ label: 'splats', size: cap * SPLAT_BYTES, usage: U().STORAGE | U().COPY_DST });
-    this.shBuf = d.createBuffer({ label: 'splat SH', size: shBytes, usage: U().STORAGE | U().COPY_DST });
+    this.splatBuf = d.createBuffer({ label: 'splats', size: cap * SPLAT_BYTES, usage: U().STORAGE | U().COPY_DST | U().COPY_SRC });
+    this.shBuf = d.createBuffer({ label: 'splat SH', size: shBytes, usage: U().STORAGE | U().COPY_DST | U().COPY_SRC });
     this.out2d = d.createBuffer({ label: 'splats 2D', size: cap * SPLAT2D_BYTES, usage: U().STORAGE | U().COPY_SRC });
     this.sorter = new GpuRadixSorter(d, cap);
     this.uploaded = 0;
@@ -218,6 +225,78 @@ export class SplatRenderer {
     this.count = end;
     this.stats.splats = end;
     this.sorter.setCount(end);
+  }
+
+  /** Allocated GPU capacity in splats. */
+  get gpuCapacity(): number {
+    return this.capacity;
+  }
+
+  /**
+   * Live streaming: grows the GPU buffers to `data.count` splats *in place* — a GPU-side
+   * copyBufferToBuffer keeps everything already uploaded, so nothing is re-sent from the CPU.
+   * Bind groups and the sorter are rebuilt for the new size. No-op if the capacity suffices.
+   */
+  ensureCapacity(data: SplatData): void {
+    if (!this.splatBuf || !this.shBuf) {
+      this.setScene(data);
+      return;
+    }
+    if (data.shDegree !== this.shDegree) throw new Error('ensureCapacity: SH degree changed; call setScene()');
+    this.positions = data.positions;
+    if (data.count <= this.capacity) return;
+    const d = this.device;
+    const cap = data.count;
+    const words = shWordsPerSplat(this.shDegree);
+    const limit = d.limits.maxStorageBufferBindingSize;
+    if (cap * words * 4 > limit || cap * SPLAT2D_BYTES > limit) throw new Error(`Scene too large for this device: ${cap} splats`);
+    const splatBuf = d.createBuffer({ label: 'splats', size: cap * SPLAT_BYTES, usage: U().STORAGE | U().COPY_DST | U().COPY_SRC });
+    const shBuf = d.createBuffer({ label: 'splat SH', size: cap * words * 4, usage: U().STORAGE | U().COPY_DST | U().COPY_SRC });
+    const enc = d.createCommandEncoder({ label: 'splatweb grow' });
+    enc.copyBufferToBuffer(this.splatBuf, 0, splatBuf, 0, this.capacity * SPLAT_BYTES);
+    enc.copyBufferToBuffer(this.shBuf, 0, shBuf, 0, this.capacity * words * 4);
+    d.queue.submit([enc.finish()]);
+    this.splatBuf.destroy();
+    this.shBuf.destroy();
+    this.out2d?.destroy();
+    this.sorter?.destroy();
+    this.slots.forEach((s) => {
+      s.uniforms.destroy();
+      s.renderParams.destroy();
+      s.cpuOrder?.destroy();
+    });
+    this.slots = [];
+    this.splatBuf = splatBuf;
+    this.shBuf = shBuf;
+    this.out2d = d.createBuffer({ label: 'splats 2D', size: cap * SPLAT2D_BYTES, usage: U().STORAGE | U().COPY_SRC });
+    this.sorter = new GpuRadixSorter(d, cap);
+    this.sorter.setCount(this.count);
+    this.capacity = cap;
+    this.stats.grows = (this.stats.grows ?? 0) + 1;
+  }
+
+  /** Live streaming: (re-)uploads splats [start, end) of `data` — e.g. updated or moved slots. */
+  uploadRange(data: SplatData, start: number, end: number): void {
+    if (!this.splatBuf || !this.shBuf || !this.sorter) throw new Error('setScene() first');
+    end = Math.min(end, data.loaded, this.capacity);
+    if (end <= start) return;
+    this.device.queue.writeBuffer(this.splatBuf, start * SPLAT_BYTES, packSplats(data, start, end));
+    const words = shWordsPerSplat(data.shDegree);
+    this.device.queue.writeBuffer(this.shBuf, start * words * 4, packSH(data, start, end));
+    this.uploaded = Math.max(this.uploaded, end);
+    this.contentVersion++;
+    this.stats.uploadedSplats = (this.stats.uploadedSplats ?? 0) + (end - start);
+  }
+
+  /** Live streaming: number of splats to draw (slots [0, n) must be uploaded). */
+  setCount(n: number): void {
+    if (!this.sorter) return;
+    n = Math.min(n, this.capacity);
+    this.count = n;
+    this.uploaded = Math.min(this.uploaded, n);
+    this.stats.splats = n;
+    this.sorter.setCount(Math.max(n, 0));
+    // CPU-sort cache keys on the count, so a changed count forces a re-sort
   }
 
   private slot(i: number): SlotResources {
@@ -374,7 +453,7 @@ export class SplatRenderer {
     }
     // Re-sort only when the view (or the number of splats / ordering) actually changed.
     const key = new Float32Array([...modelView, frontToBack ? 1 : 0]);
-    const same = s.lastCpuView && s.lastCpuCount === this.count && s.lastCpuView.every((v, k) => Math.abs(v - key[k]) < 1e-6);
+    const same = s.lastCpuView && s.lastCpuCount === this.count && s.lastCpuVersion === this.contentVersion && s.lastCpuView.every((v, k) => Math.abs(v - key[k]) < 1e-6);
     if (same) return;
     const t0 = performance.now();
     const order = cpuDepthSort(this.positions!, this.count, modelView, frontToBack, near);
@@ -382,6 +461,7 @@ export class SplatRenderer {
     d.queue.writeBuffer(s.cpuOrder, 0, order);
     s.lastCpuView = key;
     s.lastCpuCount = this.count;
+    s.lastCpuVersion = this.contentVersion;
   }
 
   /** Requests a stats readback (visible count + GPU timings) on the next encode(). */

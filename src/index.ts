@@ -15,6 +15,8 @@ export { parseSplat, writeSplat, SplatStreamParser } from './io/splat';
 export { loadFromUrl, loadFromFile, loadFromStream, guessFormat } from './io/stream';
 export type { LoadOptions, LoadProgress, SceneFormat } from './io/stream';
 export { generateDemoScene } from './io/procedural';
+export { LiveScene, connectLive, decodeLiveMessage, flushLiveScene, upAxisModelMatrix, viewFromFrame, recordFloats, LIVE_MAGIC, LIVE_VERSION, MSG as LIVE_MSG } from './io/live';
+export type { LiveMessage, LiveFrame, LiveHello, LiveSplats, LiveSceneOptions, LiveConnection, LiveRendererTarget, DirtyRanges } from './io/live';
 export * as mat4 from './core/math/mat4';
 export * as quat from './core/math/quat';
 export * as vec3 from './core/math/vec3';

@@ -6,6 +6,10 @@
  *   ?url=<scene.ply|scene.splat>   load a remote scene (must be CORS-enabled)
  *   ?count=<n>                     size of the procedural demo scene (default 150000)
  *   ?sort=gpu|cpu  ?blend=back-to-front|front-to-back  ?flip=0|1  ?sh=0..3
+ *   ?live=ws://host:port           connect to a live splat stream (splatscan protocol v1) and
+ *                                  append / update / remove splats in place as they arrive
+ *   ?follow=1                      (live) view through the scanning device's camera
+ *   ?clip=x0,y0,z0,x1,y1,z1        (live) crop box in stream coordinates, e.g. to cut the ceiling
  */
 import { CameraControls } from '../camera/controls';
 import { projectionMatrix } from '../camera/camera';
@@ -16,6 +20,8 @@ import { generateDemoScene } from '../io/procedural';
 import type { SplatData } from '../io/splatData';
 import { computeBounds } from '../io/splatData';
 import { loadFromFile, loadFromUrl } from '../io/stream';
+import { connectLive, flushLiveScene, upAxisModelMatrix, viewFromFrame } from '../io/live';
+import type { LiveConnection } from '../io/live';
 import type { LoadProgress } from '../io/stream';
 import { StatsOverlay } from '../ui/stats';
 import { isImmersiveVrAvailable, startImmersiveVr } from '../xr/xr';
@@ -218,8 +224,44 @@ async function main() {
   new ResizeObserver(resize).observe(canvas);
   resize();
 
+  // ---- live stream (?live=ws://...) --------------------------------------------------------
+  let live: LiveConnection | null = null;
+  const liveState: { bound?: SplatData | null } = {};
+  const follow = params.get('follow') === '1';
+  function startLive(url: string) {
+    loadAbort?.abort();
+    const clipP = params.get('clip')?.split(',').map(Number);
+    const clip = clipP && clipP.length === 6 && clipP.every(Number.isFinite)
+      ? { min: clipP.slice(0, 3) as [number, number, number], max: clipP.slice(3) as [number, number, number] } : undefined;
+    let framedAt = 0;
+    live = connectLive(url, {
+      clip,
+      onMessage: (m, scene) => {
+        if (m.type === 'hello') {
+          renderer.modelMatrix = upAxisModelMatrix(m.hello.upAxis);
+          flipIn.checked = false;
+          toast(`Live stream: SH degree ${m.hello.shDegree}, ${m.hello.upAxis === 2 ? 'z' : 'y'}-up`);
+        }
+        // keep re-framing while the scan grows (every doubling) until the user moves the camera
+        if (scene.size > Math.max(200, 2 * framedAt) && (framedAt === 0 || controls.version === framedVersion)) {
+          const b = computeBounds(scene.data);
+          const up = scene.hello?.upAxis === 2;
+          const c: [number, number, number] = up ? [b.center[0], b.center[2], -b.center[1]] : b.center;
+          controls.setMode('orbit');
+          controls.orbit.frame(c, b.radius);
+          controls.orbit.pitch = 0.6;
+          framedVersion = ++controls.version;
+          framedAt = scene.size;
+        }
+      },
+      onError: (e) => toast(`Live stream error: ${(e as Error).message ?? e}`, 6000),
+      onClose: () => toast('Live stream closed', 6000),
+    });
+    live.opened.catch(() => toast(`Could not connect to ${url}`, 8000));
+  }
+
   const currentView = () => ({
-    view: controls.viewMatrix(),
+    view: follow && live?.scene.lastFrame ? viewFromFrame(live.scene.lastFrame, renderer.modelMatrix) : controls.viewMatrix(),
     proj: projectionMatrix(controls.lens, canvas.width / canvas.height),
     viewport: [canvas.width, canvas.height] as [number, number],
     near: controls.lens.near,
@@ -265,20 +307,26 @@ async function main() {
     last = now;
     if (inXr) return;
     controls.update(dt);
+    if (live) {
+      flushLiveScene(live.scene, renderer, liveState);
+      current = live.scene.data;
+    }
     if (++frame % 15 === 0) renderer.requestStats();
     renderer.render(
       { colorView: context.getCurrentTexture().createView(), clear: { r: 0, g: 0, b: 0, a: 0 } },
       currentView(),
     );
     stats.tick(now, renderer.stats, {
-      mode: `${renderer.sort} sort, ${renderer.blend}`,
+      mode: `${renderer.sort} sort, ${renderer.blend}${live ? `, live ${live.scene.counts.messages} msgs` : ''}`,
       res: `${canvas.width}x${canvas.height}`,
       gpu: adapterName,
     });
   };
 
   const url = params.get('url');
-  if (url) void load({ url });
+  const liveUrl = params.get('live');
+  if (liveUrl) startLive(liveUrl);
+  else if (url) void load({ url });
   else loadDemo();
   requestAnimationFrame(loop);
 }

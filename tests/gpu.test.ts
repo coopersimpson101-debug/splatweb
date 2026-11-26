@@ -14,6 +14,8 @@ import { createSplatData } from '../src/io/splatData';
 import type { SplatData } from '../src/io/splatData';
 import { colorToDC, coeffCountForDegree } from '../src/core/sh';
 import { unpackHalf2 } from '../src/core/half';
+import { LiveScene, MSG, flushLiveScene, recordFloats, LIVE_MAGIC } from '../src/io/live';
+import { packSH, packSplats } from '../src/gpu/packing';
 
 let device: GPUDevice | null = null;
 let skipReason = '';
@@ -281,5 +283,87 @@ describe('GPU (Dawn) — real WGSL', () => {
     expect(errB).toBeLessThan(4 / 255);
     expect(errF).toBeLessThan(4 / 255);
     expect(errC).toBeLessThan(4 / 255);
+  });
+  /** Encodes an ADD/UPDATE/REMOVE message (protocol v1) for the live tests. */
+  function liveMsg(type: number, ids: number[], rnd?: () => number, deg = 1): ArrayBuffer {
+    const nf = recordFloats(deg);
+    const body = type === MSG.REMOVE ? 4 + 4 * ids.length : type === MSG.HELLO ? 12 : 4 + ids.length * (1 + nf) * 4;
+    const buf = new ArrayBuffer(12 + body);
+    const dv = new DataView(buf);
+    dv.setUint32(0, LIVE_MAGIC, true);
+    dv.setUint8(4, type);
+    if (type === MSG.HELLO) { dv.setUint16(12, 1, true); dv.setUint8(14, deg); dv.setUint8(15, 1); return buf; }
+    dv.setUint32(12, ids.length, true);
+    ids.forEach((id, i) => {
+      if (type === MSG.REMOVE) { dv.setUint32(16 + 4 * i, id, true); return; }
+      let o = 16 + i * (1 + nf) * 4;
+      dv.setUint32(o, id, true); o += 4;
+      const r = rnd!;
+      const q = [r() + 0.5, r() - 0.5, r() - 0.5, r() - 0.5];
+      const ql = Math.hypot(...q);
+      const vals = [(r() - 0.5) * 2, (r() - 0.5) * 2, (r() - 0.5) * 2, 0.05 + 0.1 * r(), 0.05 + 0.1 * r(), 0.05 + 0.1 * r(),
+        ...q.map((v) => v / ql), 0.3 + 0.6 * r(), ...Array.from({ length: nf - 11 }, () => (r() - 0.5) * 2)];
+      vals.forEach((v) => { dv.setFloat32(o, v, true); o += 4; });
+    });
+    return buf;
+  }
+
+  gpuIt('live stream: in-place growth + dirty-range uploads leave GPU buffers identical to a full upload', async () => {
+    const W = 96, H = 72;
+    const r = mulberry32(99);
+    const scene = new LiveScene({ initialCapacity: 8 });
+    const live = new SplatRenderer({ device: device!, colorFormat: 'rgba8unorm', timestamps: false });
+    const state = {};
+    scene.applyBuffer(liveMsg(MSG.HELLO, []));
+    scene.applyBuffer(liveMsg(MSG.ADD, [0, 1, 2, 3, 4], r));
+    await checkErrors(async () => { flushLiveScene(scene, live, state); });
+    const tex = device!.createTexture({ size: [W, H], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    const view = m4.lookAt([0, 0, 4], [0, 0, 0], [0, 1, 0]);
+    const proj = m4.perspectiveZO(Math.PI / 3, W / H, 0.05, 100);
+    live.render({ colorView: tex.createView(), clear: { r: 0, g: 0, b: 0, a: 0 } }, { view, proj, viewport: [W, H] });
+    // grow twice (8 -> 16 -> 32 ... ), update some, remove some (swap-remove moves slots)
+    scene.applyBuffer(liveMsg(MSG.ADD, Array.from({ length: 300 }, (_, i) => 100 + i), r));
+    scene.applyBuffer(liveMsg(MSG.UPDATE, [1, 3, 150, 250], r));
+    scene.applyBuffer(liveMsg(MSG.REMOVE, [0, 120, 121, 399, 7777]));
+    await checkErrors(async () => { flushLiveScene(scene, live, state); });
+    scene.applyBuffer(liveMsg(MSG.UPDATE, [2, 200], r));
+    await checkErrors(async () => { flushLiveScene(scene, live, state); });
+    const n = scene.size;
+    expect(n).toBe(5 + 300 - 4);
+    expect(live.splatCount).toBe(n);
+    expect(live.stats.grows).toBeGreaterThanOrEqual(1);
+    expect(live.gpuCapacity).toBe(scene.data.count);
+    const gpuSplats = new Uint32Array(await readBuffer(live.buffers.splats!, n * 32));
+    const gpuSH = new Uint32Array(await readBuffer(live.buffers.sh!, packSH(scene.data, 0, n).byteLength));
+    expect(gpuSplats).toEqual(packSplats(scene.data, 0, n));
+    expect(gpuSH).toEqual(packSH(scene.data, 0, n));
+    // pixels: live renderer vs a fresh renderer given the same data in one go
+    const fresh = new SplatRenderer({ device: device!, colorFormat: 'rgba8unorm', timestamps: false });
+    fresh.setScene(scene.data);
+    const read = async (rr: SplatRendererT) => {
+      rr.render({ colorView: tex.createView(), clear: { r: 0, g: 0, b: 0, a: 0 } }, { view, proj, viewport: [W, H] });
+      const bpr = Math.ceil((W * 4) / 256) * 256;
+      const buf = device!.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const enc = device!.createCommandEncoder();
+      enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: bpr }, [W, H]);
+      device!.queue.submit([enc.finish()]);
+      await buf.mapAsync(GPUMapMode.READ);
+      const out = new Uint8Array(buf.getMappedRange().slice(0));
+      buf.unmap();
+      buf.destroy();
+      return out;
+    };
+    const a = await read(live);
+    const b = await read(fresh);
+    let lit = 0;
+    for (let i = 3; i < a.length; i += 4) if (a[i] > 0) lit++;
+    expect(lit).toBeGreaterThan(500);
+    expect(a).toEqual(b);
+    const check = await live.validateGpuSort({ view, proj, viewport: [W, H], near: 0.05 });
+    expect(check.ok, check.message).toBe(true);
+    console.info(`[gpu.test] live: ${n} splats after ${live.stats.grows} in-place grow(s), ${live.stats.uploadedSplats} splats re-uploaded via ranges; ${lit} lit px identical to a full upload`);
+    live.destroy();
+    fresh.destroy();
+    tex.destroy();
   });
 });
