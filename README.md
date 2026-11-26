@@ -42,9 +42,10 @@ rendered headless through Dawn on an RTX 2060 by <a href="scripts/capture_gif.ts
 - **EWA splatting done properly**: `Σ' = J W Σ Wᵀ Jᵀ + 0.3 I`, checked against finite differences and a 200k-sample Monte-Carlo estimate (within 2%).
 - **Hand-written GPU radix sort**: histogram → multi-level Blelloch scan → stable scatter; bit-exact vs a CPU reference up to 600k keys.
 - **Streaming loaders** for 3DGS `.ply` (SH up to degree 3, any property order or endianness) and `.splat`; splats draw while the file downloads.
-- **Tested on real hardware**: 5 of the 60 tests run the actual WGSL through Dawn on an RTX 2060; blending matches CPU compositing to < 2/255.
+- **Tested on real hardware**: 6 of the 71 tests run the actual WGSL through Dawn on an RTX 2060; blending matches CPU compositing to < 2/255.
 - **Measured, not guessed**: 150k splats at 1080p in 2.62 ms of GPU time (headless, timestamp queries; table below).
 - **Embeddable**: `SplatRenderer` renders into a host's `GPUDevice`, encoder and target, with an optional depth test.
+- **Live streams** (`?live=ws://...`): splats are added, updated and removed in the GPU buffers while a scan is being built, with in-place growth and dirty-range uploads ([docs/live-stream.md](docs/live-stream.md)).
 
 ## Quickstart
 
@@ -52,7 +53,7 @@ rendered headless through Dawn on an RTX 2060 by <a href="scripts/capture_gif.ts
 git clone https://github.com/coopersimpson101-debug/splatweb && cd splatweb
 npm install
 npm run dev          # http://localhost:5173 , drop any .ply / .splat on the page
-npm test             # 60 tests; the GPU suite runs if Dawn finds an adapter
+npm test             # 71 tests; the GPU suite runs if Dawn finds an adapter
 npm run capture:gif  # re-record the GIF above on your own GPU
 ```
 
@@ -70,6 +71,7 @@ npm run capture:gif  # re-record the GIF above on your own GPU
 | **Raster** | Instanced, eigen-aligned quads (`drawIndirect`). The Gaussian falloff is evaluated in quad space. Output is premultiplied alpha with **back-to-front ("over")** or **front-to-back ("under")** blending. Optional read-only depth test against host geometry. |
 | **Viewer** | Orbit and FPS fly cameras, touch support (rotate, pinch, pan, two-finger fly), FPS/GPU-timing overlay (timestamp queries), drag and drop, `?url=`, SH degree, scale and COLMAP-flip controls, and a one-click **GPU sort self-test**. |
 | **XR** | Experimental `immersive-vr` through the WebXR/WebGPU binding (`XRGPUBinding`), feature-detected. **Not yet tested on a headset.** |
+| **Live streams** | `?live=ws://host:port` connects to a splatscan protocol-v1 WebSocket stream. `LiveScene` keeps an id → slot table with dense slots (swap-remove), `flushLiveScene()` uploads only dirty ranges and grows GPU buffers in place with a GPU-side copy. `?follow=1` views through the scanner, `?clip=` crops. See [docs/live-stream.md](docs/live-stream.md). |
 | **Embedding** | `SplatRenderer` takes a host-provided `GPUDevice`, command encoder, target view and camera matrices. See [docs/vanta-integration.md](docs/vanta-integration.md) and [examples/minimal-host.ts](examples/minimal-host.ts). |
 
 ## Architecture
@@ -277,7 +279,7 @@ npm run banner       # docs/assets/banner.svg procedural scene projected with th
 
 ### Tests (run on the development machine, 2026-11-24)
 
-`npm test`: **8 files, 60 tests, all passing**, including 5 tests that run the real WGSL
+`npm test`: **9 files, 71 tests, all passing** (re-run 2026-11-26 on the `feat/live-stream` branch), including 6 tests that run the real WGSL
 shaders through Dawn (D3D12, NVIDIA RTX 2060) in Node:
 
 | GPU test | Result |
@@ -287,6 +289,7 @@ shaders through Dawn (D3D12, NVIDIA RTX 2060) in Node:
 | `preprocess.wgsl` vs CPU `projectSplat`, 20k-splat scene | 19,649 visible on both, 0 cull mismatches, centre error 9e-5 px, axis error 0.08%, colour error 1.1e-3 (f16) |
 | Single-Gaussian raster vs analytic falloff | max error 0.5/255 |
 | Back-to-front / front-to-back / CPU-sort blending vs CPU compositing | max error 1.86 / 1.77 / 1.86 (/255) |
+| Live stream: 5 splats, then +300 / 4 updates / 4 removes / 2 updates through `flushLiveScene` (one in-place GPU grow) | GPU splat + SH buffers byte-identical to a fresh full upload; rendered pixels identical; GPU sort self-test passes |
 
 Hosted CI has no GPU, so there the GPU suite is skipped and reported as skipped.
 
@@ -334,6 +337,8 @@ Scene: _______ (splat count ______, SH degree __), resolution ______, GPU sort, 
 |---|:---:|---|
 | Loaders/writers, streaming, f16 packing, all CPU maths | ✅ | vitest, CPU references |
 | Preprocess, GPU radix sort, raster, both blend modes | ✅ | real WGSL through Dawn on an RTX 2060 (5 GPU tests) |
+| Live-stream loader (`?live=`), in-place growth, dirty-range uploads | ✅ | `tests/live.test.ts` (10 tests incl. a real WebSocket round trip and a Python-encoded fixture) + 1 GPU test; driven end to end by splatscan's replay server and `scripts/live_capture.ts` |
+| `?live=` in an interactive browser session | 🧪 | opened in a Chromium WebGPU browser pane against splatscan's replay server (2026-11-26): the map grows in place at ~63 FPS, no console errors; other browsers not yet tried |
 | Headless benchmark table, demo still and orbit GIF | ✅ | `npm run bench`, `npm run render`, `npm run capture:gif` |
 | `npm run build`, CI, GitHub Pages deploy | ✅ | hosted CI has no GPU, so the GPU suite reports as skipped there |
 | Interactive viewer UI (controls, overlay, drag and drop, `?url=`) | 🧪 | opened in a Chromium WebGPU browser pane (2026-11-24): renders, orbit and zoom work, overlay shows timestamp-query timings; drag and drop, `?url=` and fly mode not yet exercised |

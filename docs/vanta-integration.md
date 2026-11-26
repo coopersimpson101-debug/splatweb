@@ -91,6 +91,27 @@ placement the host needs (scan-to-world registration from a handheld scanner, fo
 * `destroy()` frees everything. The host owns and destroys the device.
 * The CPU sort fallback runs on the calling thread and only re-sorts when the view changes.
 
+## Live scans (streamed splats)
+
+A host can also show a scan **while it is being captured** (for example from splatscan running on
+a Jetson). Nothing in the contract above changes; the host adds one call per frame before
+`encode()`:
+
+```ts
+import { connectLive, flushLiveScene, upAxisModelMatrix } from 'splatweb';
+
+const live = connectLive(scannerUrl, {
+  onMessage: (m) => { if (m.type === 'hello') splats.modelMatrix = mul(scanToHostWorld, upAxisModelMatrix(m.hello.upAxis)); },
+});
+const liveState = {};
+// every frame, before splats.encode(...):
+flushLiveScene(live.scene, splats, liveState);   // in-place GPU updates, no reload
+```
+
+`live.scene.lastFrame` carries the scanner's camera pose (camera → world, computer-vision axes),
+which a host can draw as a frustum or use to follow the device. The wire format is in
+[live-stream.md](live-stream.md).
+
 ## Checklist for a host adapter
 
 - [ ] Map host device → `GPUDevice` (request higher storage-binding limits for big scans).
@@ -99,3 +120,4 @@ placement the host needs (scan-to-world registration from a handheld scanner, fo
 - [ ] Decide depth integration: none, or host depth view + compare function.
 - [ ] Call `encode()` after opaque geometry, before UI; one slot per view.
 - [ ] Call `afterSubmit()` after the host submits (only needed for stats).
+- [ ] (Live scans) call `flushLiveScene()` once per frame before `encode()`.
